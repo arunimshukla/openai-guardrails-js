@@ -70,8 +70,8 @@ export async function createOpenAIVectorStoreFromPath(
       await client.vectorStores.files.create(vectorStore.id, { file_id: fileId });
     }
 
-    // Wait for files to be processed
-    await waitForFileProcessing(client, fileIds);
+    // Wait for vector-store indexing, not global uploaded-file processing
+    await waitForFileProcessing(client, vectorStore.id, fileIds);
 
     // Return the vector store ID
     return vectorStore.id;
@@ -181,27 +181,33 @@ async function uploadFiles(client: OpenAI, filePaths: string[]): Promise<string[
 }
 
 /**
- * Wait for files to be processed by OpenAI.
+ * Wait for attached files to finish indexing in the vector store.
  */
-async function waitForFileProcessing(client: OpenAI, fileIds: string[]): Promise<void> {
-  let completed = false;
-  while (!completed) {
+async function waitForFileProcessing(
+  client: OpenAI,
+  vectorStoreId: string,
+  fileIds: string[]
+): Promise<void> {
+  while (true) {
     const allCompleted = await Promise.all(
       fileIds.map(async (fileId) => {
-        try {
-          const file = await client.files.retrieve(fileId);
-          return file.status === 'processed';
-        } catch {
-          return false;
+        const file = await client.vectorStores.files.retrieve(fileId, {
+          vector_store_id: vectorStoreId,
+        });
+        if (file.status === 'failed' || file.status === 'cancelled') {
+          const detail = file.last_error?.message;
+          throw new Error(
+            `File ${fileId} did not complete indexing in vector store ${vectorStoreId}: ${file.status}${detail ? ` (${detail})` : ''}`
+          );
         }
+        return file.status === 'completed';
       })
     );
 
     if (allCompleted.every((status) => status)) {
-      completed = true;
+      return;
     }
 
-    // Wait 1 second before checking again
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 }
